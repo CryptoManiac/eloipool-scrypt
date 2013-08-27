@@ -30,7 +30,7 @@ static PyObject *scrypt_getpowhash(PyObject *self, PyObject *args, PyObject* kwa
 
     static char *g2_kwlist[] = {"input", NULL};
 
-    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "y", g2_kwlist,
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "y#", g2_kwlist,
                                      &input, &inputlen)) {
         return NULL;
     }
