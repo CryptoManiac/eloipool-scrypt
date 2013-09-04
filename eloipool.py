@@ -829,7 +829,7 @@ if __name__ == "__main__":
 	server.receiveShare = receiveShare
 	server.RaiseRedFlags = RaiseRedFlags
 	server.ShareTarget = config.ShareTarget
-s	
+	
 	if hasattr(config, 'TrustedForwarders'):
 		server.TrustedForwarders = config.TrustedForwarders
 	server.ServerName = config.ServerName
