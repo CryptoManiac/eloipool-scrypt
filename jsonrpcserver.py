@@ -67,7 +67,7 @@ class JSONRPCHandler(httpserver.HTTPHandler):
 		return self.sendReply(500, reason)
 	
 	def checkAuthentication(self, un, pw):
-		return bool(un)
+		return self.server.checkAuthentication(un.decode('utf8'), pw.decode('utf8'))
 	
 	_MidstateNotAdv = (b'phoenix', b'poclbm', b'gminor')
 	def doHeader_user_agent(self, value):
@@ -305,6 +305,8 @@ class JSONRPCServer(networkserver.AsyncSocketServer):
 		
 		self.LPTracking = {}
 		self.LPTrackingByUser = {}
+	def checkAuthentication(self, username, password):
+		return True
 	
 	def final_init(self):
 		JSONRPCHandler.final_init(self)
