@@ -1,5 +1,5 @@
 # Eloipool - Python Bitcoin pool server
-# Copyright (C) 2011-2012  Luke Dashjr <luke-jr+eloipool@utopios.org>
+# Copyright (C) 2011-2013  Luke Dashjr <luke-jr+eloipool@utopios.org>
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU Affero General Public License as
@@ -38,6 +38,9 @@ class SocketHandler:
 	def handle_error(self):
 		self.logger.debug(traceback.format_exc())
 		self.handle_close()
+	
+	# NOTE: This function checks for socket-closed condition and calls handle_close
+	recv = asynchat.async_chat.recv
 	
 	def handle_read(self):
 		try:
@@ -153,8 +156,6 @@ class SocketHandler:
 				return
 			self.server.register_socket_m(self.fd, EPOLL_READ)
 	
-	recv = asynchat.async_chat.recv
-	
 	def close(self):
 		if self.wbuf:
 			self.closeme = True
@@ -173,6 +174,7 @@ class SocketHandler:
 	
 	def boot(self):
 		self.close()
+		self.ac_in_buffer = b''
 	
 	def changeTask(self, f, t = None):
 		tryErr(self.server.rmSchedule, self._Task, IgnoredExceptions=KeyError)
@@ -294,6 +296,7 @@ class AsyncSocketServer:
 		self.running = False
 		self.keepgoing = True
 		self.rejecting = False
+		self.lastidle = 0
 		
 		self._epoll = select.epoll()
 		self._fd = {}
@@ -357,7 +360,8 @@ class AsyncSocketServer:
 		pass
 	
 	def boot_all(self):
-		for c in self.connections.values():
+		conns = tuple(self.connections.values())
+		for c in conns:
 			tryErr(lambda: c.boot())
 	
 	def serve_forever(self):
@@ -367,8 +371,8 @@ class AsyncSocketServer:
 			self.doing = 'pre-schedule'
 			self.pre_schedule()
 			self.doing = 'schedule'
+			timeNow = time()
 			if len(self._sch):
-				timeNow = time()
 				while True:
 					with self._schLock:
 						if not len(self._sch):
@@ -393,6 +397,10 @@ class AsyncSocketServer:
 						if EH: tryErr(EH.handle_close)
 			else:
 				timeout = -1
+			if self.lastidle < timeNow - 1:
+				timeout = 0
+			elif timeout < 0 or timeout > 1:
+				timeout = 1
 			
 			self.doing = 'poll'
 			try:
@@ -401,9 +409,13 @@ class AsyncSocketServer:
 				continue
 			except:
 				self.logger.error(traceback.format_exc())
+				continue
 			self.doing = 'events'
+			if not events:
+				self.lastidle = time()
 			for (fd, e) in events:
-				o = self._fd[fd]
+				o = self._fd.get(fd)
+				if o is None: continue
 				self.lastHandler = o
 				try:
 					if e & EPOLL_READ:
