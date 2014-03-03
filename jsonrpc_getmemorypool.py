@@ -42,6 +42,7 @@ class _getmemorypool:
 		'noncerange': '00000000ffffffff',
 		'target': '00000000ffffffffffffffffffffffffffffffffffffffffffffffffffffffff',
 		'version': 2,
+		'submitold': True,
 	}
 	def doJSON_getmemorypool(self, params = _NoParams, sp = _NoParams):
 		if isinstance(params, str):
@@ -88,6 +89,8 @@ class _getmemorypool:
 			'blkdata': data[80:],
 			'username': self.Username,
 			'remoteHost': self.remoteHost,
+			'userAgent': self.UA,
+			'submitProtocol': 'GMP',
 		}
 		try:
 			self.server.receiveShare(share)

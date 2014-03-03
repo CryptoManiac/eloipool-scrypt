@@ -26,14 +26,39 @@ if not hasattr(config, 'ShareTarget'):
 
 
 import logging
+import logging.handlers
 
-if len(logging.root.handlers) == 0:
+rootlogger = logging.getLogger(None)
+logformat = getattr(config, 'LogFormat', '%(asctime)s\t%(name)s\t%(levelname)s\t%(message)s')
+logformatter = logging.Formatter(logformat)
+if len(rootlogger.handlers) == 0:
 	logging.basicConfig(
-		format='%(asctime)s\t%(name)s\t%(levelname)s\t%(message)s',
+        format=logformat,
 		level=logging.DEBUG,
 	)
-	for infoOnly in ('checkShare', 'JSONRPCHandler', 'merkleMaker', 'Waker for JSONRPCServer', 'JSONRPCServer', 'StratumServer', 'Waker for StratumServer', 'WorkLogPruner'):
+    for infoOnly in (
+            'checkShare',
+            'getTarget',
+            'JSONRPCHandler',
+            'JSONRPCServer',
+            'merkleMaker',
+            'StratumServer',
+            'Waker for JSONRPCServer',
+            'Waker for StratumServer',
+            'WorkLogPruner'
+    ):
 		logging.getLogger(infoOnly).setLevel(logging.INFO)
+if getattr(config, 'LogToSysLog', False):
+    sysloghandler = logging.handlers.SysLogHandler(address='/dev/log')
+    rootlogger.addHandler(sysloghandler)
+if hasattr(config, 'LogFile'):
+    if isinstance(config.LogFile, str):
+        filehandler = logging.FileHandler(config.LogFile)
+    else:
+        filehandler = logging.handlers.TimedRotatingFileHandler(**config.LogFile)
+    filehandler.setFormatter(logformatter)
+    rootlogger.addHandler(filehandler)
+
 
 def RaiseRedFlags(reason):
 	logging.getLogger('redflag').critical(reason)
@@ -41,10 +66,12 @@ def RaiseRedFlags(reason):
 
 
 from bitcoin.node import BitcoinLink, BitcoinNode
+
 bcnode = BitcoinNode(config.UpstreamNetworkId)
 bcnode.userAgent += b'Eloipool:0.1/'
 
 import jsonrpc
+
 UpstreamBitcoindJSONRPC = jsonrpc.ServiceProxy(config.UpstreamURI)
 
 
@@ -105,6 +132,7 @@ DupeShareHACK = {}
 
 server = None
 stratumsrv = None
+
 def updateBlocks():
 	server.wakeLongpoll()
 	stratumsrv.updateJob()
@@ -158,12 +186,13 @@ MM.onBlockUpdate = updateBlocks
 
 from binascii import b2a_hex
 from copy import deepcopy
-from math import log
+from math import ceil, log
 from merklemaker import MakeBlockHeader
 from struct import pack, unpack
 import threading
 from time import time
-from util import PendingUpstream, RejectedShare, bdiff1target, dblsha, PoWHash, LEhash2int, swap32, target2bdiff, target2pdiff
+from util import PendingUpstream, RejectedShare, bdiff1target, dblsha, PoWHash, LEhash2int, swap32, target2bdiff, \
+    target2pdiff
 import jsonrpc
 import traceback
 
@@ -375,6 +404,18 @@ def buildStratumData(share, merkleroot):
 	
 	share['data'] = data
 	return data
+
+
+def IsJobValid(wli, wluser=None):
+    if wluser not in workLog:
+        return False
+    if wli not in workLog[wluser]:
+        return False
+    (wld, issueT) = workLog[wluser][wli]
+    if time() < issueT - 120:
+        return False
+    return True
+
 
 def checkShare(share):
 	shareTime = share['time'] = time()
@@ -841,6 +882,7 @@ if __name__ == "__main__":
 	stratumsrv.getTarget = getTarget
 	stratumsrv.checkAuthentication = checkAuthentication
 	stratumsrv.defaultTarget = config.ShareTarget
+    stratumsrv.IsJobValid = IsJobValid
 	if not hasattr(config, 'StratumAddresses'):
 		config.StratumAddresses = ()
 	for a in config.StratumAddresses:

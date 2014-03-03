@@ -37,7 +37,8 @@ class _getblocktemplate:
 		'target': '00000000ffffffffffffffffffffffffffffffffffffffffffffffffffffffff',
 		'expires': 120,
 		'version': 2,
-		
+		'submitold': True,
+
 		# Bitcoin-specific:
 		'sigoplimit': 20000,
 		'sizelimit': 1000000,
@@ -49,9 +50,15 @@ class _getblocktemplate:
 		if 'longpollid' in params:
 			self.processLP(params['longpollid'])
 		
+		RequestedTarget = None
+		try:
+			RequestedTarget = int(params['target'], 16)
+		except:
+			pass
+
 		rv = dict(self.getblocktemplate_rv_template)
 		p_magic = [False]
-		(MC, wld, target) = self.server.getBlockTemplate(self.Username, p_magic=p_magic)
+		(MC, wld, target) = self.server.getBlockTemplate(self.Username, p_magic=p_magic, RequestedTarget=RequestedTarget)
 		(height, merkleTree, cb, prevBlock, bits) = MC[:5]
 		rv['height'] = height
 		rv['previousblockhash'] = b2a_hex(prevBlock[::-1]).decode('ascii')
@@ -88,6 +95,8 @@ class _getblocktemplate:
 			'blkdata': data[80:],
 			'username': self.Username,
 			'remoteHost': self.remoteHost,
+			'userAgent': self.UA,
+			'submitProtocol': 'GBT',
 		}
 		try:
 			self.server.receiveShare(share)

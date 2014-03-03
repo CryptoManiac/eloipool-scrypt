@@ -1,5 +1,5 @@
 # Eloipool - Python Bitcoin pool server
-# Copyright (C) 2011-2012  Luke Dashjr <luke-jr+eloipool@utopios.org>
+# Copyright (C) 2011-2013  Luke Dashjr <luke-jr+eloipool@utopios.org>
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU Affero General Public License as
@@ -24,7 +24,7 @@ import socket
 import struct
 from time import time
 import traceback
-from util import RejectedShare, swap32, target2bdiff
+from util import RejectedShare, swap32, target2bdiff, UniqueSessionIdManager
 import config
 
 class StratumError(BaseException):
@@ -52,6 +52,7 @@ class StratumHandler(networkserver.SocketHandler):
 		self.Usernames = {}
 		self.lastBDiff = None
 		self.JobTargets = collections.OrderedDict()
+		self.UA = None
 	
 	def sendReply(self, ob):
 		return self.push(json.dumps(ob).encode('ascii') + b"\n")
@@ -63,7 +64,21 @@ class StratumHandler(networkserver.SocketHandler):
 		if not inbuf:
 			return
 		
-		rpc = json.loads(inbuf)
+		try:
+			rpc = json.loads(inbuf)
+		except ValueError:
+			self.boot()
+			return
+		if 'method' not in rpc:
+			# Assume this is a reply to our request
+			funcname = '_stratumreply_%s' % (rpc['id'],)
+			if not hasattr(self, funcname):
+				return
+			try:
+				getattr(self, funcname)(rpc)
+			except BaseException as e:
+				self.logger.debug(traceback.format_exc())
+			return
 		funcname = '_stratum_%s' % (rpc['method'].replace('.', '_'),)
 		if not hasattr(self, funcname):
 			self.sendReply({
@@ -93,6 +108,9 @@ class StratumHandler(networkserver.SocketHandler):
 				self.logger.debug(fexc)
 			return
 		
+		if rpc['id'] is None:
+			return
+
 		self.sendReply({
 			'error': None,
 			'id': rpc['id'],
@@ -100,7 +118,7 @@ class StratumHandler(networkserver.SocketHandler):
 		})
 	
 	def sendJob(self):
-		target = self.server.defaultTarget / 128
+		target = self.server.defaultTarget / 16
 		if len(self.Usernames) == 1:
 			dtarget = self.server.getTarget(next(iter(self.Usernames)), time())
 			if not dtarget is None:
@@ -119,9 +137,26 @@ class StratumHandler(networkserver.SocketHandler):
 		if len(self.JobTargets) > 4:
 			self.JobTargets.popitem(False)
 		self.JobTargets[self.server.JobId] = target
+
+	def requestStratumUA(self):
+		self.sendReply({
+			'id': 7,
+			'method': 'client.get_version',
+			'params': (),
+		})
+
+	def _stratumreply_7(self, rpc):
+		self.UA = rpc.get('result') or rpc
 	
-	def _stratum_mining_subscribe(self):
-		xid = struct.pack('@P', id(self))
+	def _stratum_mining_subscribe(self, UA = None, xid = None):
+		if not UA is None:
+			self.UA = UA
+		if not hasattr(self, '_sid'):
+			self._sid = UniqueSessionIdManager.get()
+		if self.server._Clients.get(self._sid) not in (self, None):
+			del self._sid
+			raise self.server.RaiseRedFlags(RuntimeError('issuing duplicate sessionid'))
+		xid = struct.pack('=I', self._sid)  # NOTE: Assumes sessionids are 4 bytes
 		self.extranonce1 = xid
 		xid = b2a_hex(xid).decode('ascii')
 		self.server._Clients[id(self)] = self
@@ -135,12 +170,15 @@ class StratumHandler(networkserver.SocketHandler):
 			4,
 		]
 	
-	def handle_close(self):
+	def close(self):
+		if hasattr(self, '_sid'):
+			UniqueSessionIdManager.put(self._sid)
+			delattr(self, '_sid')
 		try:
 			del self.server._Clients[id(self)]
 		except:
 			pass
-		super().handle_close()
+		super().close()
 	
 	def _stratum_mining_submit(self, username, jobid, extranonce2, ntime, nonce):
 		if username not in self.Usernames:
@@ -153,6 +191,8 @@ class StratumHandler(networkserver.SocketHandler):
 			'extranonce2': bytes.fromhex(extranonce2),
 			'ntime': bytes.fromhex(ntime),
 			'nonce': bytes.fromhex(nonce),
+			'userAgent': self.UA,
+			'submitProtocol': 'stratum',
 		}
 		if jobid in self.JobTargets:
 			share['target'] = self.JobTargets[jobid]
@@ -166,11 +206,12 @@ class StratumHandler(networkserver.SocketHandler):
 	
 	def _stratum_mining_authorize(self, username, password = None):
 		try:
-			valid = self.server.checkAuthentication(username, password)
+			valid = self.checkAuthentication(username, password)
 		except:
 			valid = False
 		if valid:
 			self.Usernames[username] = None
+			self.changeTask(self.requestStratumUA, 0)
 		return valid
 	
 	def _stratum_mining_get_transactions(self, jobid):
@@ -188,7 +229,7 @@ class StratumServer(networkserver.AsyncSocketServer):
 	waker = True
 	schMT = True
 	
-	extranonce1null = struct.pack('@P', 0)
+	extranonce1null = struct.pack('=I', 0)  # NOTE: Assumes sessionids are 4 bytes
 	
 	def __init__(self, *a, **ka):
 		ka.setdefault('RequestHandlerClass', StratumHandler)
@@ -199,8 +240,6 @@ class StratumServer(networkserver.AsyncSocketServer):
 		self.JobId = '%d' % (time(),)
 		self.WakeRequest = None
 		self.UpdateTask = None
-	def checkAuthentication(self, username, password):
-		return True
 	
 	def updateJob(self, wantClear = False):
 		if self.UpdateTask:
@@ -245,7 +284,7 @@ class StratumServer(networkserver.AsyncSocketServer):
 				'00000002',
 				b2a_hex(bits[::-1]).decode('ascii'),
 				b2a_hex(struct.pack('>L', int(time()))).decode('ascii'),
-				wantClear
+				not self.IsJobValid(self.JobId)
 			],
 		}).encode('ascii') + b"\n"
 		self.JobId = JobId
@@ -256,14 +295,14 @@ class StratumServer(networkserver.AsyncSocketServer):
 		self.UpdateTask = self.schedule(self.updateJob, time() + 98)
 	
 	def pre_schedule(self):
-		if self.WakeRequest == 1:
+		if self.WakeRequest:
 			self._wakeNodes()
 	
 	def _wakeNodes(self):
 		self.WakeRequest = None
 		C = self._Clients
 		if not C:
-			self.logger.info('Nobody to wake up')
+			self.logger.debug('Nobody to wake up')
 			return
 		OC = len(C)
 		self.logger.info("%d clients to wake up..." % (OC,))
@@ -278,7 +317,7 @@ class StratumServer(networkserver.AsyncSocketServer):
 				# Ignore socket errors; let the main event loop take care of them later
 			except:
 				OC -= 1
-				self.logger.warn('Error sending new job:\n' + traceback.format_exc())
+				self.logger.debug('Error sending new job:\n' + traceback.format_exc())
 		
 		self.logger.info('New job sent to %d clients in %.3f seconds' % (OC, time() - now))
 	
