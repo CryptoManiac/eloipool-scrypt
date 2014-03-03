@@ -1,6 +1,7 @@
 #!/usr/bin/python3
 # Eloipool - Python Bitcoin pool server
 # Copyright (C) 2011-2012  Luke Dashjr <luke-jr+eloipool@utopios.org>
+# Portions written by Peter Leurs <kinlo@triplemining.com>
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU Affero General Public License as
@@ -287,6 +288,7 @@ def getExistingStratumJob(jobid):
 	return (wld[0], wld)
 
 loggersShare = []
+authenticators = []
 
 RBDs = []
 RBPs = []
@@ -553,6 +555,12 @@ def logShare(share):
 	for i in loggersShare:
 		i.logShare(share)
 
+def checkAuthentication(username, password):
+	for i in authenticators:
+		if i.checkAuthentication(username, password):
+			return True
+	return False
+		
 def receiveShare(share):
 	# TODO: username => userid
 	try:
@@ -727,6 +735,7 @@ import interactivemode
 from networkserver import NetworkListener
 import threading
 import sharelogging
+import authentication
 from stratumserver import StratumServer
 import imp
 
@@ -773,6 +782,21 @@ if __name__ == "__main__":
 		except:
 			logging.getLogger('sharelogging').error("Error setting up share logger %s: %s", name,  sys.exc_info())
 
+
+	if not hasattr(config, 'Authentication'):
+	config.Authentication = ({'module': 'allowall'},)
+	
+	for i in config.Authentication:
+	name = i['module']
+	parameters = i
+	try:
+	fp, pathname, description = imp.find_module(name, authentication.__path__)
+	m = imp.load_module(name, fp, pathname, description)
+	lo = getattr(m, name)(**parameters)
+	authenticators.append(lo)
+	except:
+	logging.getLogger('authentication').error("Error setting up authentication module %s: %s", name, sys.exc_info())
+	
 	LSbc = []
 	if not hasattr(config, 'BitcoinNodeAddresses'):
 		config.BitcoinNodeAddresses = ()
@@ -815,6 +839,7 @@ if __name__ == "__main__":
 	stratumsrv.getExistingStratumJob = getExistingStratumJob
 	stratumsrv.receiveShare = receiveShare
 	stratumsrv.getTarget = getTarget
+	stratumsrv.checkAuthentication = checkAuthentication
 	stratumsrv.defaultTarget = config.ShareTarget
 	if not hasattr(config, 'StratumAddresses'):
 		config.StratumAddresses = ()
