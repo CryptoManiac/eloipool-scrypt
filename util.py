@@ -32,7 +32,7 @@ bdiff1target = 0x0000FFFF0000000000000000000000000000000000000000000000000000000
 
 def YN(b):
 	if b is None:
-		return None
+		return 'N'
 	return 'Y' if b else 'N'
 
 def _maybe_int(n):
@@ -222,3 +222,88 @@ class WithNoop:
 	def __exit__(self, *a):
 		pass
 WithNoop = WithNoop()
+
+
+from collections import deque
+import threading
+import time
+
+class _UniqueSessionIdManager:
+	def __init__(self, size = 4, defaultDelay = 120):
+		self._NextID = 0
+		self._NextID_Lock = threading.Lock()
+		self._FreeIDs = deque()
+		self._size = size
+		self._max = (0x100 ** size) - 1
+		self._defaultDelay = defaultDelay
+		self._schPut = ScheduleDict()
+		self._schPut_Lock = threading.Lock()
+
+	def size(self):
+		return self._size
+
+	def put(self, sid, delay = False, now = None):
+		if not delay:
+			return self._FreeIDs.append(sid)
+
+		if delay is True:
+			delay = self._defaultDelay
+		if now is None:
+			now = time.time()
+		with self._schPut_Lock:
+			self._schPut[sid] = now + delay
+
+	def get(self, desired = None, now = None):
+		try:
+			return self._FreeIDs.popleft()
+		except IndexError:
+			pass
+
+		# Check delayed-free for one
+		if now is None:
+			now = time.time()
+		with self._schPut_Lock:
+			if len(self._schPut) and self._schPut.nextTime() <= now:
+				sid = self._schPut.shift()
+				while len(self._schPut) and self._schPut.nextTime() <= now:
+					self.put(self._schPut.shift())
+				return sid
+
+		# If none free, make a new one
+		with self._NextID_Lock:
+			sid = self._NextID
+			self._NextID = sid + 1
+		if sid <= self._max:
+			return sid
+
+		# TODO: Maybe steal an about-to-be-freed SID in the worst case scenario?
+
+		raise IndexError('Ran out of session ids')
+
+	# NOTE: Will steal a pending-free sid
+	def getSpecific(self, desired):
+		try:
+			self._FreeIDs.remove(desired)
+			return desired
+		except ValueError:
+			pass
+
+		# FIXME: relies on id(number) == id(number)
+		with self._schPut_Lock:
+			if desired in self._schPut:
+				del self._schPut[desired]
+				return desired
+
+		# NOTE: Generated growth is limited to avoid memory exhaustion exploits
+		with self._NextID_Lock:
+			NextID = self._NextID
+			if desired >= NextID and desired <= min(self._max, NextID + 0x10000 - len(self._FreeIDs)):
+				# NOTE: Incrementing _NextID up front in case of exception
+				self._NextID = desired + 1
+				for i in range(NextID, desired):
+					self.put(i)
+				return desired
+
+		raise KeyError('Session id %u not available' % (desired,))
+
+UniqueSessionIdManager = _UniqueSessionIdManager()
