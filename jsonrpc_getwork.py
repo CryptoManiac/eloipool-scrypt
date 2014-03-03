@@ -38,6 +38,7 @@ class _getwork:
 		'data': '000000800000000000000000000000000000000000000000000000000000000000000000000000000000000080020000',
 		'target': 'ffffffffffffffffffffffffffffffffffffffffffffffffffffffff00000000',
 		'hash1': '00000000000000000000000000000000000000000000000000000000000000000000008000000000000000000000000000000000000000000000000000010000',
+		'submitold': True,
 	}
 	def doJSON_getwork(self, data=None):
 		if not data is None:
@@ -76,6 +77,8 @@ class _getwork:
 			'_origdata' : datax,
 			'username': self.Username,
 			'remoteHost': self.remoteHost,
+			'userAgent': self.UA,
+			'submitProtocol': 'getwork',
 		}
 		try:
 			self.server.receiveShare(share)

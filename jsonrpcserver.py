@@ -46,7 +46,11 @@ class JSONRPCHandler(httpserver.HTTPHandler):
 	def final_init(server):
 		pass
 	
-	def sendReply(self, status=200, body=b'', headers=None):
+	def __init__(self, *a, **ka):
+		super().__init__(*a, **ka)
+		self.UA = None
+
+	def sendReply(self, status=200, body=b'', headers=None, *a, **ka):
 		headers = dict(headers) if headers else {}
 		if body and body[0] == 123:  # b'{'
 			headers.setdefault('Content-Type', 'application/json')
@@ -54,7 +58,7 @@ class JSONRPCHandler(httpserver.HTTPHandler):
 			if not body:
 				headers.setdefault('Content-Type', 'application/json')
 			headers.setdefault('X-Long-Polling', '/LP')
-		return super().sendReply(status, body, headers)
+		return super().sendReply(status, body, headers, *a, **ka)
 	
 	def fmtError(self, reason = '', code = 100):
 		reason = json.dumps(reason)
@@ -72,6 +76,7 @@ class JSONRPCHandler(httpserver.HTTPHandler):
 	_MidstateNotAdv = (b'phoenix', b'poclbm', b'gminor')
 	def doHeader_user_agent(self, value):
 		self.reqinfo['UA'] = value
+		self.UA = value.decode('latin-1')  # technically ASCII, but latin-1 ignores errors
 		quirks = self.quirks
 		(UA, v, *x) = value.split(b'/', 1) + [None]
 		
@@ -188,7 +193,7 @@ class JSONRPCHandler(httpserver.HTTPHandler):
 			return
 		
 		try:
-			self.sendReply(200, body=rv, headers=self.LPHeaders)
+			self.sendReply(200, body=rv, headers=self.LPHeaders, tryCompression=False)
 			raise httpserver.RequestNotHandled
 		except httpserver.RequestHandled:
 			# Expected
@@ -203,14 +208,9 @@ class JSONRPCHandler(httpserver.HTTPHandler):
 			self._LPCall = (reqid, method, params)
 			raise
 		except Exception as e:
-			self.logger.error(("Error during JSON-RPC call: %s%s\n" % (method, params)) + traceback.format_exc())
+			self.logger.error(("Error during JSON-RPC call (UA=%s, IP=%s): %s%s\n" % (self.reqinfo.get('UA'), self.remoteHost, method, params)) + traceback.format_exc())
 			efun = self.fmtError if longpoll else self.doError
 			return efun(r'Service error: %s' % (e,))
-		try:
-			rv.setdefault('submitold', False)
-		except:
-			pass
-
 		rv = {'id': reqid, 'error': None, 'result': rv}
 		try:
 			rv = json.dumps(rv)
@@ -222,7 +222,10 @@ class JSONRPCHandler(httpserver.HTTPHandler):
 	
 	def doJSON(self, data, longpoll = False):
 		# TODO: handle JSON errors
-		data = data.decode('utf8')
+		try:
+			data = data.decode('utf8')
+		except UnicodeDecodeError as e:
+			return self.doError(str(e))
 		if longpoll and not data:
 			self.JSONRPCId = jsonid = 1
 			self.JSONRPCMethod = 'getwork'
@@ -305,6 +308,7 @@ class JSONRPCServer(networkserver.AsyncSocketServer):
 		
 		self.LPTracking = {}
 		self.LPTrackingByUser = {}
+
 	def checkAuthentication(self, username, password):
 		return True
 	
@@ -348,6 +352,7 @@ class JSONRPCServer(networkserver.AsyncSocketServer):
 		now = time()
 		
 		for ic in C:
+			self.lastHandler = ic
 			try:
 				ic.wakeLongpoll(self._LPWantClear)
 			except socket.error:
